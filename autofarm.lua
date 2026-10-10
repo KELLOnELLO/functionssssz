@@ -8,7 +8,9 @@ local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local LocalPlayer = Players.LocalPlayer
 
-local CUSTOM_TP_POINTS = {
+local CONFIG_FILE = "void_yba_farm_config.json"
+
+local DEFAULT_TP_POINTS = {
     Vector3.new(95, 62, 72),
     Vector3.new(-292, 33, 15),
     Vector3.new(-36, -42, 523),
@@ -28,7 +30,6 @@ local CUSTOM_TP_POINTS = {
 local MERCHANT_POS = Vector3.new(-702, -25, -335)
 local ANIM_ID = "rbxassetid://72675993856360"
 local ANIM_START_TIME = 0.5
-local CONFIG_FILE = "void_yba_farm_config.json"
 
 function AutoFarm.new()
     local self = setmetatable({}, AutoFarm)
@@ -37,18 +38,23 @@ function AutoFarm.new()
         TPOffset = 6,
         AutoSell = false,
         ServerHop = false,
+        ServerHopInterval = 300,
         RandomTP = true,
         TPSpeed = 1.1,
+        TPCount = 3,
         ERange = 50,
         EHoldTime = 1,
-        ServerHopInterval = 300
+        TPPoints = DEFAULT_TP_POINTS,
+        Weather = "Sunny",
+        RemoveTrees = false,
+        FPSCap = 60,
+        RenderDistance = 5
     }
 
     self.autofarmEnabled = false
     self.noclipEnabled = false
     self.cameraNoclipEnabled = false
     self.connections = {}
-    self.threads = {}
 
     self.lockConnection = nil
     self.lockedPosition = nil
@@ -57,6 +63,10 @@ function AutoFarm.new()
     self.animConnection = nil
     self.animTrack = nil
     self.currentTarget = nil
+    self.farmCoroutine = nil
+    self.eSpamCoroutine = nil
+    self.keyBypassHooked = false
+    self.originalNamecall = nil
 
     self.stats = {
         totalTPs = 0,
@@ -68,7 +78,8 @@ function AutoFarm.new()
 
     self.Callbacks = {
         OnPickup = nil,
-        OnStatsUpdate = nil
+        OnStatsUpdate = nil,
+        OnKeyBypass = nil
     }
 
     return self
@@ -87,7 +98,7 @@ function AutoFarm:LoadConfig()
         end)
         if ok and type(data) == "table" then
             for k, v in pairs(data) do
-                if self.Config[k] ~= nil then
+                if self.Config[k] ~= nil and k ~= "TPPoints" then
                     self.Config[k] = v
                 end
             end
@@ -97,8 +108,14 @@ end
 
 function AutoFarm:SaveConfig()
     if writefile then
+        local save = {}
+        for k, v in pairs(self.Config) do
+            if k ~= "TPPoints" then
+                save[k] = v
+            end
+        end
         pcall(function()
-            writefile(CONFIG_FILE, HttpService:JSONEncode(self.Config))
+            writefile(CONFIG_FILE, HttpService:JSONEncode(save))
         end)
     end
 end
@@ -109,13 +126,64 @@ function AutoFarm:SetConfig(key, value)
     end
 end
 
+function AutoFarm:SetTPPoints(points)
+    if type(points) == "table" and #points > 0 then
+        self.Config.TPPoints = points
+    end
+end
+
+function AutoFarm:AddTPPoint(vec)
+    if typeof(vec) == "Vector3" then
+        table.insert(self.Config.TPPoints, vec)
+    end
+end
+
 function AutoFarm:GetStats()
     return {
         totalTPs = self.stats.totalTPs,
         totalPicked = self.stats.totalPicked,
         lastPickedItem = self.stats.lastPickedItem,
-        pickedItems = self.stats.pickedItems
+        pickedItems = self.stats.pickedItems,
+        sessionStartTime = self.stats.sessionStartTime
     }
+end
+
+function AutoFarm:GetItemsListText()
+    if #self.stats.pickedItems == 0 then return "—" end
+    local counts = {}
+    for _, name in ipairs(self.stats.pickedItems) do
+        counts[name] = (counts[name] or 0) + 1
+    end
+    local list = {}
+    for name, count in pairs(counts) do
+        table.insert(list, name .. ": " .. count)
+    end
+    table.sort(list)
+    return table.concat(list, "\n")
+end
+
+function AutoFarm:EnableKeyBypass()
+    if self.keyBypassHooked then return end
+    local ok = pcall(function()
+        self.originalNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self2, ...)
+            local args = {...}
+            local method = getnamecallmethod()
+            if method == "InvokeServer" and args[1] == "idklolbrah2de" then
+                if self.Callbacks.OnKeyBypass then
+                    pcall(self.Callbacks.OnKeyBypass)
+                end
+                return "  ___XP DE KEY"
+            end
+            return self.originalNamecall(self2, ...)
+        end))
+    end)
+    if ok then
+        self.keyBypassHooked = true
+    end
+end
+
+function AutoFarm:DisableKeyBypass()
+    self.keyBypassHooked = false
 end
 
 local function getItemFolder()
@@ -215,9 +283,16 @@ function AutoFarm:UnlockPosition()
 end
 
 function AutoFarm:RandomTeleport()
-    if #CUSTOM_TP_POINTS > 0 then
-        local chosen = CUSTOM_TP_POINTS[math.random(1, #CUSTOM_TP_POINTS)]
+    local pts = self.Config.TPPoints
+    if pts and #pts > 0 then
+        local chosen = pts[math.random(1, #pts)]
         self:LockToPosition(chosen)
+    end
+end
+
+function AutoFarm:TeleportTo(vec)
+    if typeof(vec) == "Vector3" then
+        self:LockToPosition(vec)
     end
 end
 
@@ -427,7 +502,7 @@ function AutoFarm:InternalLoop()
             end
 
             if not collected and self.Config.RandomTP then
-                for i = 1, 3 do
+                for i = 1, self.Config.TPCount do
                     if not self.autofarmEnabled then break end
                     self:RandomTeleport()
                     task.wait(self.Config.TPSpeed)
@@ -498,6 +573,30 @@ function AutoFarm:SetWeather(value)
             end
         end)
     end)
+end
+
+function AutoFarm:ApplyFPSCap(cap)
+    if setfpscap then pcall(setfpscap, cap) end
+end
+
+function AutoFarm:ApplyRenderDistance(dist)
+    pcall(function()
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    end)
+    pcall(function()
+        workspace.StreamingTargetRadius = dist * 100
+    end)
+end
+
+function AutoFarm:RemoveTreesAndBushes()
+    local removed = 0
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj.Name == "Tree" or obj.Name == "Bush" then
+            obj:Destroy()
+            removed = removed + 1
+        end
+    end
+    return removed
 end
 
 function AutoFarm:ServerHop()
@@ -572,6 +671,10 @@ function AutoFarm:Destroy()
     self:StopServerHopLoop()
     if self.noclipConnection then pcall(function() self.noclipConnection:Disconnect() end) end
     if self.cameraNoclipEnabled then pcall(function() self:DisableCameraNoclip() end) end
+    for _, conn in ipairs(self.connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    self.connections = {}
     self.noclipConnection = nil
     self.lockConnection = nil
     self.animConnection = nil
