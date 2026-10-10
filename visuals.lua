@@ -25,7 +25,10 @@ function Visuals.new()
     self.espGui = nil
     self.espFolder = nil
     self.espData = {}
-    self.connections = {}
+    self.espConn = nil
+    self.espAddedConn = nil
+    self.espRemovedConn = nil
+    self.espCharConn = nil
 
     self.threeDGui = nil
     self.threeDLabels = nil
@@ -55,16 +58,13 @@ local function getHumanoid(plr)
     return char:FindFirstChildOfClass("Humanoid")
 end
 
-local function getHead(plr)
-    local char = getCharacter(plr)
-    if not char then return nil end
-    return char:FindFirstChild("Head")
-end
-
 local function getRoot(plr)
     local char = getCharacter(plr)
     if not char then return nil end
-    return char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+    return char:FindFirstChild("HumanoidRootPart")
+        or char:FindFirstChild("UpperTorso")
+        or char:FindFirstChild("Torso")
+        or char:FindFirstChild("LowerTorso")
 end
 
 local function readLeaderstat(plr, names)
@@ -93,13 +93,13 @@ local function readStand(plr)
 end
 
 local function readLevel(plr)
-    local lvl = readLeaderstat(plr, {"Level", "Lvl", "LVL", "Уровень"})
+    local lvl = readLeaderstat(plr, {"Level", "Lvl", "LVL"})
     if lvl then return tostring(lvl) end
     return nil
 end
 
 local function readSpec(plr)
-    local spec = readLeaderstat(plr, {"Spec", "Specialty", "Специальность"})
+    local spec = readLeaderstat(plr, {"Spec", "Specialty"})
     if spec and spec ~= "" then return tostring(spec) end
     local char = getCharacter(plr)
     if char then
@@ -128,10 +128,11 @@ end
 
 function Visuals:CreateESPForPlayer(plr)
     if self.espData[plr] then return end
+    if not self.espFolder then return end
 
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "VoidESP_" .. plr.Name
-    billboard.Size = UDim2.new(0, 200, 0, 60)
+    billboard.Size = UDim2.new(0, 200, 0, 64)
     billboard.StudsOffset = Vector3.new(0, 3.5, 0)
     billboard.AlwaysOnTop = true
     billboard.Adornee = nil
@@ -152,7 +153,7 @@ function Visuals:CreateESPForPlayer(plr)
 
     local infoLbl = Instance.new("TextLabel")
     infoLbl.Name = "Info"
-    infoLbl.Size = UDim2.new(1, 0, 0, 44)
+    infoLbl.Size = UDim2.new(1, 0, 0, 48)
     infoLbl.Position = UDim2.new(0, 0, 0, 16)
     infoLbl.BackgroundTransparency = 1
     infoLbl.Font = Enum.Font.Gotham
@@ -192,7 +193,6 @@ function Visuals:UpdateESP()
                 local data = self.espData[plr]
                 if data then
                     data.billboard.Adornee = root
-                    local head = getHead(plr)
 
                     local level = readLevel(plr)
                     local stand = readStand(plr)
@@ -204,9 +204,9 @@ function Visuals:UpdateESP()
                     end
 
                     local lines = {}
-                    table.insert(lines, "Ур: " .. (level or "?"))
-                    table.insert(lines, "Стенд: " .. (stand or "—"))
-                    table.insert(lines, "Спец: " .. (spec or "—"))
+                    table.insert(lines, "Lvl: " .. (level or "?"))
+                    table.insert(lines, "Stand: " .. (stand or "-"))
+                    table.insert(lines, "Spec: " .. (spec or "-"))
                     if hp then
                         table.insert(lines, "HP: " .. hp)
                     end
@@ -232,23 +232,20 @@ function Visuals:EnableESP()
     self.espEnabled = true
     self:CreateESPGui()
 
-    local conn = RunService.RenderStepped:Connect(function()
+    self.espConn = RunService.RenderStepped:Connect(function()
         if not self.espEnabled then return end
         self:UpdateESP()
     end)
-    table.insert(self.connections, conn)
 
-    local addedConn = Players.PlayerAdded:Connect(function(plr)
+    self.espAddedConn = Players.PlayerAdded:Connect(function(plr)
         if self.espEnabled then
             self:CreateESPForPlayer(plr)
         end
     end)
-    table.insert(self.connections, addedConn)
 
-    local removedConn = Players.PlayerRemoving:Connect(function(plr)
+    self.espRemovedConn = Players.PlayerRemoving:Connect(function(plr)
         self:RemoveESPForPlayer(plr)
     end)
-    table.insert(self.connections, removedConn)
 
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LocalPlayer then
@@ -256,7 +253,7 @@ function Visuals:EnableESP()
         end
     end
 
-    local charConn = LocalPlayer.CharacterAdded:Connect(function()
+    self.espCharConn = LocalPlayer.CharacterAdded:Connect(function()
         task.wait(0.5)
         for plr, _ in pairs(self.espData) do
             self:RemoveESPForPlayer(plr)
@@ -269,17 +266,16 @@ function Visuals:EnableESP()
             end
         end
     end)
-    table.insert(self.connections, charConn)
 end
 
 function Visuals:DisableESP()
     if not self.espEnabled then return end
     self.espEnabled = false
 
-    for _, conn in ipairs(self.connections) do
-        pcall(function() conn:Disconnect() end)
-    end
-    self.connections = {}
+    if self.espConn then self.espConn:Disconnect(); self.espConn = nil end
+    if self.espAddedConn then self.espAddedConn:Disconnect(); self.espAddedConn = nil end
+    if self.espRemovedConn then self.espRemovedConn:Disconnect(); self.espRemovedConn = nil end
+    if self.espCharConn then self.espCharConn:Disconnect(); self.espCharConn = nil end
 
     for plr, _ in pairs(self.espData) do
         self:RemoveESPForPlayer(plr)
@@ -306,7 +302,7 @@ end
 
 function Visuals:Build3DItemsList()
     if not self.threeDItems or #self.threeDItems == 0 then
-        return "—"
+        return "-"
     end
     local counts = {}
     for _, name in ipairs(self.threeDItems) do
@@ -357,7 +353,7 @@ function Visuals:Enable3DOff()
     title.Size = UDim2.new(1, 0, 0, 40)
     title.Position = UDim2.new(0, 0, 0.05, 0)
     title.BackgroundTransparency = 1
-    title.Text = "ПОСЛЕДНИЙ СОБРАННЫЙ ПРЕДМЕТ:"
+    title.Text = "LAST PICKED ITEM:"
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 28
@@ -368,7 +364,7 @@ function Visuals:Enable3DOff()
     lastItem.Size = UDim2.new(1, 0, 0, 50)
     lastItem.Position = UDim2.new(0, 0, 0.05, 45)
     lastItem.BackgroundTransparency = 1
-    lastItem.Text = "—"
+    lastItem.Text = "-"
     lastItem.TextColor3 = Color3.fromRGB(180, 40, 40)
     lastItem.Font = Enum.Font.GothamBold
     lastItem.TextSize = 40
@@ -379,7 +375,7 @@ function Visuals:Enable3DOff()
     list.Size = UDim2.new(1, -40, 0.6, 0)
     list.Position = UDim2.new(0, 20, 0.25, 0)
     list.BackgroundTransparency = 1
-    list.Text = "—"
+    list.Text = "-"
     list.TextColor3 = Color3.fromRGB(160, 160, 170)
     list.Font = Enum.Font.Gotham
     list.TextSize = 14
@@ -392,7 +388,7 @@ function Visuals:Enable3DOff()
     stats.Size = UDim2.new(1, 0, 0, 24)
     stats.Position = UDim2.new(0, 0, 0.93, 0)
     stats.BackgroundTransparency = 1
-    stats.Text = "Собрано: 0 | ТП: 0"
+    stats.Text = "Picked: 0 | TP: 0"
     stats.TextColor3 = Color3.fromRGB(120, 120, 130)
     stats.Font = Enum.Font.Gotham
     stats.TextSize = 16
@@ -446,10 +442,10 @@ function Visuals:Update3DOverlay(stats, itemsText)
     if not self.threeDGui or not self.threeDLabels then return end
     if stats then
         if self.threeDLabels.lastItem then
-            self.threeDLabels.lastItem.Text = stats.lastPickedItem or "—"
+            self.threeDLabels.lastItem.Text = stats.lastPickedItem or "-"
         end
         if self.threeDLabels.stats then
-            self.threeDLabels.stats.Text = "Собрано: " .. tostring(stats.totalPicked or 0) .. " | ТП: " .. tostring(stats.totalTPs or 0)
+            self.threeDLabels.stats.Text = "Picked: " .. tostring(stats.totalPicked or 0) .. " | TP: " .. tostring(stats.totalTPs or 0)
         end
     end
     if itemsText and self.threeDLabels.list then
@@ -469,6 +465,7 @@ function Visuals:Destroy()
     self:Disable3DOff()
     self.espData = {}
     self.threeDLabels = nil
+    self.threeDItems = nil
 end
 
 return Visuals
